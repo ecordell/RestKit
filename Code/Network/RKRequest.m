@@ -222,6 +222,8 @@
     
     if (informDelegate && [_delegate respondsToSelector:@selector(requestDidCancelLoad:)]) {
         [_delegate requestDidCancelLoad:self];
+    } else {
+        [[UIApplication sharedApplication] rk_popNetworkActivity];
     }
 }
 
