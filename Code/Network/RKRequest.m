@@ -53,7 +53,7 @@
 - (id)initWithURL:(NSURL*)URL delegate:(id)delegate {
     self = [self initWithURL:URL];
 	if (self) {
-		_delegate = delegate;
+		_delegate = [delegate retain];
 	}
 	return self;
 }
@@ -107,6 +107,7 @@
     [[NSNotificationCenter defaultCenter] removeObserver:self];
     
   	self.delegate = nil;
+    [_delegate release];
   	[_connection cancel];
   	[_connection release];
   	_connection = nil;
