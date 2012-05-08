@@ -68,12 +68,12 @@ typedef enum {
 /**
  * When implemented, sent before objects are pushed to the server.
  */
-- (void)syncManager:(RKSyncManager *)syncManager willPushObjects:(NSArray *)objects withSyncMode:(RKSyncMode)syncMode;
+- (void)syncManager:(RKSyncManager *)syncManager willPushObjects:(NSSet *)objects withSyncMode:(RKSyncMode)syncMode;
 
 /**
  * When implemented, sent when all push requests have been added to the request queue.
  */
-- (void)syncManager:(RKSyncManager *)syncManager didPushObjects:(NSArray *)objects withSyncMode:(RKSyncMode)syncMode;
+- (void)syncManager:(RKSyncManager *)syncManager didPushObjects:(NSSet *)objects withSyncMode:(RKSyncMode)syncMode;
 
 /**
  * When implemented, sent before updates are pulled from ther server.
@@ -91,11 +91,10 @@ typedef enum {
  `RKSyncManager` handles the observation of Core Data changes and the syncronization of a local store with a remote server. This object is created automatically when an RKManagedObjectStore is initialized, and is associated with the objectStore's related `objectManager`.  
  */
 @interface RKSyncManager : NSObject <RKObjectLoaderDelegate> {
-    NSMutableArray *_queue;
     NSMutableDictionary *_strategies;
     NSMutableDictionary *_directions;
-    NSTimer *_intervalTimer;
     NSInteger _requestCounter;
+    NSMutableArray *_queues;
 }
 
 /**
@@ -110,6 +109,13 @@ typedef enum {
  */
 @property (nonatomic, assign) id<RKSyncManagerDelegate> delegate;
 
+/**
+ If NO, the sync manager will take no actions for any inserted, updated, or deleted 
+ objects (i.e. do nothing).  This is useful if you need to do some
+ local Core Data management without affecting the status of those records on the server,
+ such as logging a user out and deleting their associated data.
+ */
+@property (nonatomic) BOOL syncEnabled;
 
 /**
  Creates an RKSyncManager and associates it with an RKObjectManager. This happens automatically on objectStore initialization, or one can be created seperately to handle different syncing tasks. Once initialized the `objectManager` is `readonly`.
@@ -123,6 +129,14 @@ typedef enum {
  @see RKSyncMode
  */
 - (void)sync;
+
+/**
+ Convenience method for syncing all pending objects with `syncMode = RKSyncModeInterval`.
+ It is your responsibility to manage an NSTimer instance to automatically call this method.
+ @param objectClass The Class pointer of the class you wish to sync.  To sync all classes, pass nil.
+ @see RKSyncMode
+ */
+- (void)intervalSyncForClass:(Class)objectClass;
 
 /**
  Convenience method for syncing all pending objects with `syncMode = RKSyncModeManual` of
@@ -144,21 +158,24 @@ typedef enum {
 - (void)pull;
 
 /**
- Syncs (push followed by pull) all objects with a given syncMode and class. If syncMode is nil, it syncs all objects of type `objectClass`. If `objectClass` is nil, it syncs all objects with the specified `syncMode` regardless of the class. Both values cannot be nil.
+ Syncs (push followed by pull) all objects with a given syncMode and class. If syncMode is nil, it syncs
+ all objects of type `objectClass`. If `objectClass` is nil, it syncs all objects with the specified
+ `syncMode` regardless of the class. Both values cannot be nil.
  */
-
 - (void)syncObjectsWithSyncMode:(RKSyncMode)syncMode andClass:(Class)objectClass;
 
 /**
- Pushes all objects with a given syncMode and class to a remote server. If syncMode is nil, it pushes all objects of type `objectClass`. If `objectClass` is nil, it pushes all objects with the specified `syncMode` regardless of the class. Both values cannot be nil.
+ Pushes all objects with a given syncMode and class to a remote server. If syncMode is nil, it pushes
+ all objects of type `objectClass`. If `objectClass` is nil, it pushes all objects with the specified
+ `syncMode` regardless of the class. Both values cannot be nil.
  */
-
 - (void)pushObjectsWithSyncMode:(RKSyncMode)syncMode andClass:(Class)objectClass;
 
 /**
- Pulls all objects with a given syncMode and class. If syncMode is nil, it pulls all objects of type `objectClass`. If `objectClass` is nil, it pulls all objects with the specified `syncMode` regardless of the class. Both values cannot be nil.
+ Pulls all objects with a given syncMode and class. If syncMode is nil, it pulls all objects of type
+ `objectClass`. If `objectClass` is nil, it pulls all objects with the specified `syncMode` regardless
+ of the class. Both values cannot be nil.
  */
-
 - (void)pullObjectsWithSyncMode:(RKSyncMode)syncMode andClass:(Class)objectClass;
 
 #pragma mark - Sync Direction
@@ -222,14 +239,5 @@ typedef enum {
  @see RKSyncStrategy
  */
 - (RKSyncStrategy) syncStrategyForClass:(Class)objectClass;
-
-#pragma mark - Sync Interval
-
-/**
- Sets the interval that `RKSyncManager` will try to synchronize items that are queued with
- synchronization mode `RKSyncModeInterval`.
- */
-- (void)setSyncInterval:(NSTimeInterval)interval;
-
 
 @end
