@@ -366,7 +366,7 @@
             return NO;
         }
 
-        if ([self.delegate respondsToSelector:@selector(objectLoader:didSerializeSourceObject:toSerialization:)]) {
+        if (self.delegate && [self.delegate respondsToSelector:@selector(objectLoader:didSerializeSourceObject:toSerialization:)]) {
             [self.delegate objectLoader:self didSerializeSourceObject:self.sourceObject toSerialization:&params];
         }
 

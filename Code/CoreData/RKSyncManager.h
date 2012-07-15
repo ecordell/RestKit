@@ -78,6 +78,8 @@
     NSMutableArray *_queue;
     NSMutableArray *_completedQueueItems;
     NSMutableArray *_failedQueueItems;
+    BOOL _isTransparentSyncing;
+    dispatch_group_t _networkGroup;
 }
 
 /**
@@ -93,9 +95,19 @@
 @property (nonatomic, assign) id<RKSyncManagerDelegate> delegate;
 
 /**
+ The local RKRequestQueue that this syncManager uses. Sync operations should be sequential, so this has a limit of one request at a time.
+ @see RKManagedObjectSyncDelegate
+ */
+@property (nonatomic, retain, readonly) RKRequestQueue *requestQueue;
+
+/**
  The Grand Central Dispatch concurrent queue to perform our network operations. Push requests (POST, PUT, DELETE) can run concurrently, but pull requests (GET) are barriers - previous queue items must complete before one runs, and no other request can run at the same time.
  */
 @property (nonatomic, assign) dispatch_queue_t networkOperationQueue;
+
+@property (nonatomic, assign) dispatch_queue_t syncOperationQueue;
+
+@property (nonatomic, assign) dispatch_queue_t synchronizationQueue;
 
 /**
  Returns the current number of network operations in the networkOperationQueue. This is decremented only when an item in the queue finishes running.

@@ -53,8 +53,8 @@ typedef void (^RKSyncNetworkOperationBlock)(void);
 
 @implementation RKSyncManager
 
-@synthesize objectManager = _objectManager, delegate = _delegate;
-@synthesize networkOperationQueue = _networkOperationQueue, networkOperationCount = _networkOperationCount;
+@synthesize objectManager = _objectManager, delegate = _delegate, requestQueue = _requestQueue;
+@synthesize networkOperationQueue = _networkOperationQueue, networkOperationCount = _networkOperationCount, syncOperationQueue = _syncOperationQueue, synchronizationQueue = _synchronizationQueue;
 @synthesize defaultSyncMode = _defaultSyncMode, defaultSyncStrategy = _defaultSyncStrategy, defaultSyncDirection = _defaultSyncDirection;
 @synthesize syncEnabled;
 
@@ -70,8 +70,18 @@ typedef void (^RKSyncNetworkOperationBlock)(void);
         // By default, push AND pull objects from the server at the same time
         _defaultSyncDirection = RKSyncDirectionBoth;
         
-        _networkOperationQueue = dispatch_queue_create("com.RestKit.Syncing.NetworkOperationsQueue", DISPATCH_QUEUE_CONCURRENT);
+        _networkOperationQueue = dispatch_queue_create("com.RestKit.Syncing.NetworkOperationsQueue", DISPATCH_QUEUE_SERIAL);
         _networkOperationCount = 0;
+        
+        _syncOperationQueue = dispatch_queue_create("com.RestKit.Syncing.SyncOperationsQueue", DISPATCH_QUEUE_SERIAL);
+        
+        _networkGroup = dispatch_group_create();
+        
+        _requestQueue = [RKRequestQueue newRequestQueueWithName:@"_rkSyncRequestQueue"];
+        _requestQueue.concurrentRequestsLimit = 1;
+        [_requestQueue start];
+        
+        _isTransparentSyncing = NO;
         
         _objectManager = [objectManager retain];
         _queue = [[NSMutableArray alloc] init];
@@ -106,8 +116,16 @@ typedef void (^RKSyncNetworkOperationBlock)(void);
     [_queue release];
     _queue = nil;
     
+    [_requestQueue release];
+    _requestQueue = nil;
+    
     dispatch_release(_networkOperationQueue);
     _networkOperationQueue = nil;
+    
+    dispatch_release(_syncOperationQueue);
+    _syncOperationQueue = nil;
+    
+    dispatch_release(_networkGroup);
     
     [_completedQueueItems release];
     _completedQueueItems = nil;
@@ -275,40 +293,37 @@ typedef void (^RKSyncNetworkOperationBlock)(void);
         
         
         //These network operations can run concurrently, and so are added normally to the networkOperationsQueue
-        for (__block RKManagedObjectSyncQueue *item in _queue) {
+        for (RKManagedObjectSyncQueue *item in _queue) {
             NSManagedObject *object = [context objectWithID:[self objectIDWithString:item.objectIDString]];
-            
             //TODO: if statement should be refactored so that it only creates the blocks
             
             // Depending on what type of item this is, make the appropriate RestKit call 
             RKRequestMethod method = [item.syncMethod integerValue];
             if (method == RKRequestMethodPOST) {
-                RKSyncNetworkOperationBlock postBlock = ^{
-                    _networkOperationCount++;
-                    [_objectManager postObject:object usingBlock:^(RKObjectLoader *loader){
-                        loader.onDidLoadObject = ^ (id object){
-                            _networkOperationCount--;
-                            [blocksafeSelf addCompletedQueueItem: item];
+                _networkOperationCount++;
+                [_objectManager postObject:object usingBlock:^(RKObjectLoader *loader){
+                    dispatch_group_enter(_networkGroup);
+                    loader.queue = _requestQueue;
+                    loader.onDidLoadObject = ^ (id object){
+                        _networkOperationCount--;
+                        [blocksafeSelf addCompletedQueueItem: item];
+                        if (_networkOperationCount == 0) {
                             [blocksafeSelf checkIfQueueFinishedWithSyncMode:syncMode andClass:objectClass];
-                        };
-                        loader.onDidFailWithError = ^ (NSError *error){
-                            _networkOperationCount--;
-                            [blocksafeSelf addFailedQueueItem: item];
+                        }
+                        dispatch_group_leave(_networkGroup);
+                    };
+                    loader.onDidFailWithError = ^ (NSError *error){
+                        _networkOperationCount--;
+                        [blocksafeSelf addFailedQueueItem: item];
+                        if (_networkOperationCount == 0) {
                             [blocksafeSelf checkIfQueueFinishedWithSyncMode:syncMode andClass:objectClass];
-                            if (blocksafeDelegate && [blocksafeDelegate respondsToSelector:@selector(syncManager:didFailSyncingQueueItem:withError:)]) {
-                                [blocksafeDelegate syncManager:self didFailSyncingQueueItem:item withError:error];
-                            }
-                        };
-                    }];
-                };
-                
-                //if we're using proxy only, it's important that each operation happen in order.
-                if (strategy == RKSyncStrategyBatch) {
-                    dispatch_async(_networkOperationQueue, postBlock);
-                } else if (strategy == RKSyncStrategyProxyOnly){
-                    dispatch_barrier_async(_networkOperationQueue, postBlock);
-                }
-                
+                        }
+                        if (blocksafeDelegate && [blocksafeDelegate respondsToSelector:@selector(syncManager:didFailSyncingQueueItem:withError:)]) {
+                            [blocksafeDelegate syncManager:self didFailSyncingQueueItem:item withError:error];
+                        }
+                        dispatch_group_leave(_networkGroup);
+                    };
+                }];
             } else if (method == RKRequestMethodPUT) {
                 RKSyncNetworkOperationBlock putBlock = ^{
                     _networkOperationCount++;
@@ -384,23 +399,25 @@ typedef void (^RKSyncNetworkOperationBlock)(void);
             RKLogError(@"There was an error sending some items in the queue: %@", _failedQueueItems);
         }
         
-        NSError *error = nil;
-        if ([_objectManager.objectStore save:&error] == NO) {
-            RKLogError(@"Error removing items from queue: %@", error);
-        }
+        NSManagedObjectContext *context = _objectManager.objectStore.managedObjectContextForCurrentThread;
         
         //Get a set of the objects that were successfully sent, in order to notify the delegate
-        NSMutableSet *objectSet = [[[NSMutableSet alloc] init] autorelease];
+        /*NSMutableSet *objectSet = [[[NSMutableSet alloc] init] autorelease];
         for (RKManagedObjectSyncQueue *item in _completedQueueItems) {
             if ([item.syncMethod integerValue] != RKRequestMethodDELETE) {
-                [objectSet addObject:[_objectManager.objectStore.managedObjectContextForCurrentThread objectWithID:
+                [objectSet addObject:[context objectWithID:
                                       [self objectIDWithString:item.objectIDString]]];
             }
-        }
+        }*/
         
         // We've been working with a transient queue: delete the items from the core data queue now.
         for (RKManagedObjectSyncQueue *item in _completedQueueItems) {
-            [item deleteEntity];
+            [[context objectWithID:item.objectID] deleteEntity];
+        }
+        
+        NSError *error = nil;
+        if ([_objectManager.objectStore save:&error] == NO) {
+            RKLogError(@"Error removing items from queue: %@", error);
         }
         
         [_queue removeAllObjects];
@@ -408,7 +425,7 @@ typedef void (^RKSyncNetworkOperationBlock)(void);
         [_failedQueueItems removeAllObjects];
         
         if (_delegate && [_delegate respondsToSelector:@selector(syncManager:didPushObjects:withSyncMode:)]) {
-            [_delegate syncManager:self didPushObjects:(NSSet *)objectSet withSyncMode:syncMode];
+            [_delegate syncManager:self didPushObjects:nil withSyncMode:syncMode];
         }
     }
 }
@@ -482,8 +499,13 @@ typedef void (^RKSyncNetworkOperationBlock)(void);
         [_delegate syncManager:self willSyncWithSyncMode:syncMode andClass:objectClass];
     }
     
-    [self sendObjectsWithSyncMode:syncMode andClass:objectClass];
-    [self pullObjectsWithSyncMode:syncMode andClass:objectClass];
+    __block RKSyncManager *blocksafeSelf = self;
+    dispatch_async(_syncOperationQueue, ^{ 
+        dispatch_group_wait(_networkGroup, DISPATCH_TIME_FOREVER);
+        [blocksafeSelf sendObjectsWithSyncMode:syncMode andClass:objectClass];
+    });
+    
+    //[self pullObjectsWithSyncMode:syncMode andClass:objectClass];
   
     if (_delegate && [_delegate respondsToSelector:@selector(syncManager:didSyncWithSyncMode:andClass:)]) {
         [_delegate syncManager:self didSyncWithSyncMode:syncMode andClass:objectClass];
